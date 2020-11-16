@@ -15,27 +15,19 @@ function! s:checkVersion() abort
       echohl Error
       echom "coc.nvim requires at least Vim 8.0.1453 or Neovim 0.3.2, but you're using an older version."
       echom "Please upgrade your (neo)vim."
-      echom "You can set this to make this error message go away:"
+      echom "You can add this to your vimrc to avoid this message:"
       echom "    let g:coc_disable_startup_warning = 1"
       echom "Note that some features may error out or behave incorrectly."
       echom "Please do not report bugs unless you're using at least Vim 8.0.1453 or Neovim 0.3.2."
       echohl None
       sleep 2
     else
-      if has('nvim') && !has('nvim-0.4.3')
+      if !has('nvim-0.4.0') && !has('patch-8.1.1719')
         echohl WarningMsg
-        echom "coc.nvim works best on neovim >= 0.4.3, consider upgrade your neovim."
-        echom "You can set this to make this error message go away:"
+        echom "coc.nvim works best on vim >= 8.1.1719 and neovim >= 0.4.0, consider upgrade your vim."
+        echom "You can add this to your vimrc to avoid this message:"
         echom "    let g:coc_disable_startup_warning = 1"
         echom "Note that some features may behave incorrectly."
-        echohl None
-        sleep 2
-      elseif !has('nvim') && !has('patch-8.1.1719')
-        echohl WarningMsg
-        echom "coc.nvim need vim >= 8.1.1719 to support features like popup and text property."
-        echom "Consider upgrade your vim for better experience."
-        echom "You can set this to make this error message go away:"
-        echom "    let g:coc_disable_startup_warning = 1"
         echohl None
         sleep 2
       endif
@@ -46,6 +38,7 @@ endfunction
 call s:checkVersion()
 
 let g:did_coc_loaded = 1
+let g:coc_workspace_initialized = 0
 let g:coc_service_initialized = 0
 let s:is_win = has('win32') || has('win64')
 let s:root = expand('<sfile>:h:h')
@@ -64,16 +57,16 @@ function! CocTagFunc(pattern, flags, info) abort
   return coc#rpc#request('getTagList', [])
 endfunction
 
-function! CocAction(...) abort
-  return coc#rpc#request('cocAction', a:000)
+function! CocAction(name, ...) abort
+  return coc#rpc#request(a:name, a:000)
 endfunction
 
 function! CocHasProvider(name) abort
   return coc#rpc#request('hasProvider', [a:name])
 endfunction
 
-function! CocActionAsync(...) abort
-  return s:AsyncRequest('cocAction', a:000)
+function! CocActionAsync(name, ...) abort
+  return s:AsyncRequest(a:name, a:000)
 endfunction
 
 function! CocRequest(...) abort
@@ -103,7 +96,7 @@ function! CocRequestAsync(...)
 endfunction
 
 function! s:AsyncRequest(name, args) abort
-  let Cb = a:args[len(a:args) - 1]
+  let Cb = empty(a:args)? v:null : a:args[len(a:args) - 1]
   if type(Cb) == 2
     if !coc#rpc#ready()
       call Cb('service not started', v:null)
@@ -132,7 +125,12 @@ function! s:SearchOptions(...) abort
   let list = ['-e', '--regexp', '-F', '--fixed-strings', '-L', '--follow',
         \ '-g', '--glob', '--hidden', '--no-hidden', '--no-ignore-vcs',
         \ '--word-regexp', '-w', '--smart-case', '-S', '--no-config',
-        \ '--line-regexp', '-x']
+        \ '--line-regexp', '--no-ignore', '-x']
+  return join(list, "\n")
+endfunction
+
+function! s:LoadedExtensions(...) abort
+  let list = CocAction('loadedExtensions')
   return join(list, "\n")
 endfunction
 
@@ -143,9 +141,6 @@ endfunction
 
 function! s:OpenConfig()
   let home = coc#util#get_config_home()
-  if home =~# '^\~'
-    let home = substitute(home, '\~', $HOME,'')
-  endif
   if !isdirectory(home)
     call mkdir(home, 'p')
   endif
@@ -186,6 +181,16 @@ function! s:CursorRangeFromSelected(type, ...) abort
   call coc#rpc#request('cursorsSelect', [bufnr('%'), 'operator', a:type])
 endfunction
 
+function! s:OpenDiagnostics(...) abort
+  let height = get(a:, 1, 0)
+  call coc#rpc#request('fillDiagnostics', [bufnr('%')])
+  if height
+    execute ':lopen '.height
+   else
+    lopen
+  endif
+endfunction
+
 function! s:Disable() abort
   if get(g:, 'coc_enabled', 0) == 0
     return
@@ -193,7 +198,6 @@ function! s:Disable() abort
   augroup coc_nvim
     autocmd!
   augroup end
-  call coc#util#close_floats()
   call coc#rpc#request('detach', [])
   echohl MoreMsg
     echom '[coc.nvim] Event disabled'
@@ -202,17 +206,17 @@ function! s:Disable() abort
 endfunction
 
 function! s:Autocmd(...) abort
-  if !get(g:,'coc_workspace_initialized', 0)
+  if !g:coc_workspace_initialized
     return
   endif
   call coc#rpc#notify('CocAutocmd', a:000)
 endfunction
 
 function! s:SyncAutocmd(...)
-  if !get(g:,'coc_workspace_initialized', 0)
+  if !g:coc_workspace_initialized
     return
   endif
-  if get(g:, 'coc_service_initialized', 0)
+  if g:coc_service_initialized
     call coc#rpc#request('CocAutocmd', a:000)
   else
     call coc#rpc#notify('CocAutocmd', a:000)
@@ -242,7 +246,7 @@ function! s:Enable(initialize)
     endif
     if s:is_vim
       if exists('##DirChanged')
-        autocmd DirChanged        * call s:Autocmd('DirChanged', expand('<afile>'))
+        autocmd DirChanged        * call s:Autocmd('DirChanged', getcwd())
       endif
       if exists('##TerminalOpen')
         autocmd TerminalOpen      * call s:Autocmd('TermOpen', +expand('<abuf>'))
@@ -251,9 +255,19 @@ function! s:Enable(initialize)
       autocmd DirChanged        * call s:Autocmd('DirChanged', get(v:event, 'cwd', ''))
       autocmd TermOpen          * call s:Autocmd('TermOpen', +expand('<abuf>'))
       autocmd TermClose         * call s:Autocmd('TermClose', +expand('<abuf>'))
+      autocmd CursorMoved       * call coc#float#nvim_refresh_scrollbar(win_getid())
+      autocmd WinEnter          * call coc#float#nvim_win_enter(win_getid())
+      if exists('##WinClosed')
+        autocmd WinClosed       * call coc#float#close_related(+expand('<afile>'))
+      endif
     endif
-    autocmd WinLeave            * call coc#util#clearmatches(get(w:, 'coc_matchids', []))
-    autocmd BufWinLeave         * call s:Autocmd('BufWinLeave', +expand('<abuf>'), win_getid())
+    if has('nvim-0.4.0') || has('patch-8.1.1719')
+      autocmd CursorHold        * call coc#float#check_related()
+    endif
+    autocmd WinLeave            * call coc#highlight#clear_match_group(0, '^CocHighlight')
+    autocmd WinLeave            * call s:Autocmd('WinLeave', win_getid())
+    autocmd WinEnter            * call s:Autocmd('WinEnter', win_getid())
+    autocmd BufWinLeave         * call s:Autocmd('BufWinLeave', +expand('<abuf>'), bufwinid(+expand('<abuf>')))
     autocmd BufWinEnter         * call s:Autocmd('BufWinEnter', +expand('<abuf>'), win_getid())
     autocmd FileType            * call s:Autocmd('FileType', expand('<amatch>'), +expand('<abuf>'))
     autocmd CompleteDone        * call s:Autocmd('CompleteDone', get(v:, 'completed_item', {}))
@@ -273,12 +287,11 @@ function! s:Enable(initialize)
     autocmd CursorHold          * call s:Autocmd('CursorHold', +expand('<abuf>'))
     autocmd CursorHoldI         * call s:Autocmd('CursorHoldI', +expand('<abuf>'))
     autocmd BufNewFile,BufReadPost * call s:Autocmd('BufCreate', +expand('<abuf>'))
-    autocmd BufUnload           * call s:SyncAutocmd('BufUnload', +expand('<abuf>'))
+    autocmd BufUnload           * call s:Autocmd('BufUnload', +expand('<abuf>'))
     autocmd BufWritePre         * call s:SyncAutocmd('BufWritePre', +expand('<abuf>'))
     autocmd FocusGained         * if mode() !~# '^c' | call s:Autocmd('FocusGained') | endif
     autocmd VimResized          * call s:Autocmd('VimResized', &columns, &lines)
     autocmd VimLeavePre         * let g:coc_vim_leaving = 1
-    autocmd VimLeave            * call s:SyncAutocmd('VimLeave')
     autocmd BufReadCmd,FileReadCmd,SourceCmd list://* call coc#list#setup(expand('<amatch>'))
     autocmd BufWriteCmd __coc_refactor__* :call coc#rpc#notify('saveRefactor', [+expand('<abuf>')])
     autocmd ColorScheme * call s:Hi()
@@ -292,14 +305,19 @@ function! s:Enable(initialize)
 endfunction
 
 function! s:Hi() abort
+  hi default CocErrorSign    ctermfg=Red     guifg=#ff0000 guibg=NONE
+  hi default CocWarningSign  ctermfg=Brown   guifg=#ff922b guibg=NONE
+  hi default CocInfoSign     ctermfg=Yellow  guifg=#fab005 guibg=NONE
+  hi default CocHintSign     ctermfg=Blue    guifg=#15aabf guibg=NONE
+  hi default CocSelectedText ctermfg=Red     guifg=#fb4934 guibg=NONE
+  hi default CocCodeLens     ctermfg=Gray    guifg=#999999 guibg=NONE
   hi default CocUnderline    cterm=underline gui=underline
   hi default CocBold         term=bold cterm=bold gui=bold
-  hi default CocErrorSign    ctermfg=Red     guifg=#ff0000
-  hi default CocWarningSign  ctermfg=Brown   guifg=#ff922b
-  hi default CocInfoSign     ctermfg=Yellow  guifg=#fab005
-  hi default CocHintSign     ctermfg=Blue    guifg=#15aabf
-  hi default CocSelectedText ctermfg=Red     guifg=#fb4934
-  hi default CocCodeLens     ctermfg=Gray    guifg=#999999
+  hi default CocItalic       term=italic cterm=italic gui=italic
+  hi default CocMarkdownLink ctermfg=Blue    guifg=#15aabf guibg=NONE
+  hi default link CocMarkdownCode     markdownCode
+  hi default link CocMarkdownHeader   markdownH1
+  hi default link CocMenuSel          PmenuSel
   hi default link CocErrorFloat       CocErrorSign
   hi default link CocWarningFloat     CocWarningSign
   hi default link CocInfoFloat        CocInfoSign
@@ -320,6 +338,9 @@ function! s:Hi() abort
   else
     hi default link CocFloating Pmenu
   endif
+  if !exists('*sign_getdefined') || empty(sign_getdefined('CocCurrentLine'))
+    sign define CocCurrentLine linehl=CocMenuSel
+  endif
   if has('nvim-0.5.0')
     hi default CocCursorTransparent gui=strikethrough blend=100
   endif
@@ -336,11 +357,11 @@ function! s:Hi() abort
 endfunction
 
 function! s:FormatFromSelected(type)
-  call CocAction('formatSelected', a:type)
+  call CocActionAsync('formatSelected', a:type)
 endfunction
 
 function! s:CodeActionFromSelected(type)
-  call CocAction('codeAction', a:type)
+  call CocActionAsync('codeAction', a:type)
 endfunction
 
 function! s:ShowInfo()
@@ -349,7 +370,7 @@ function! s:ShowInfo()
   else
     let lines = []
     echomsg 'coc.nvim service not started, checking environment...'
-    let node = get(g:, 'coc_node_path', 'node')
+    let node = get(g:, 'coc_node_path', $COC_NODE_PATH == '' ? 'node' : $COC_NODE_PATH)
     if !executable(node)
       call add(lines, 'Error: '.node.' is not executable!')
     else
@@ -386,11 +407,9 @@ function! s:ShowInfo()
   endif
 endfunction
 
+command! -nargs=? CocDiagnostics  :call s:OpenDiagnostics(<f-args>)
 command! -nargs=0 CocInfo         :call s:ShowInfo()
 command! -nargs=0 CocOpenLog      :call coc#rpc#notify('openLog',  [])
-command! -nargs=0 CocListResume   :call coc#rpc#notify('listResume', [])
-command! -nargs=0 CocPrev         :call coc#rpc#notify('listPrev', [])
-command! -nargs=0 CocNext         :call coc#rpc#notify('listNext', [])
 command! -nargs=0 CocDisable      :call s:Disable()
 command! -nargs=0 CocEnable       :call s:Enable(0)
 command! -nargs=0 CocConfig       :call s:OpenConfig()
@@ -398,10 +417,17 @@ command! -nargs=0 CocLocalConfig  :call coc#rpc#notify('openLocalConfig', [])
 command! -nargs=0 CocRestart      :call coc#rpc#restart()
 command! -nargs=0 CocStart        :call coc#rpc#start_server()
 command! -nargs=0 CocRebuild      :call coc#util#rebuild()
+command! -nargs=1 -complete=custom,s:LoadedExtensions  CocWatch    :call coc#rpc#notify('watchExtension', [<f-args>])
 command! -nargs=+ -complete=custom,s:SearchOptions  CocSearch    :call coc#rpc#notify('search', [<f-args>])
 command! -nargs=+ -complete=custom,s:ExtensionList  CocUninstall :call CocActionAsync('uninstallExtension', <f-args>)
-command! -nargs=* -complete=custom,coc#list#options CocList      :call coc#rpc#notify('openList',  [<f-args>])
 command! -nargs=* -complete=custom,s:CommandList -range CocCommand :call coc#rpc#notify('runCommand', [<f-args>])
+command! -nargs=* -complete=custom,coc#list#options CocList      :call coc#rpc#notify('openList',  [<f-args>])
+command! -nargs=? -complete=custom,coc#list#names CocListResume   :call coc#rpc#notify('listResume', [<f-args>])
+command! -nargs=0 -complete=custom,coc#list#names CocListCancel   :call coc#rpc#notify('listCancel', [])
+command! -nargs=? -complete=custom,coc#list#names CocPrev         :call coc#rpc#notify('listPrev', [<f-args>])
+command! -nargs=? -complete=custom,coc#list#names CocNext         :call coc#rpc#notify('listNext', [<f-args>])
+command! -nargs=? -complete=custom,coc#list#names CocFirst        :call coc#rpc#notify('listFirst', [<f-args>])
+command! -nargs=? -complete=custom,coc#list#names CocLast         :call coc#rpc#notify('listLast', [<f-args>])
 command! -nargs=* -range CocAction :call coc#rpc#notify('codeActionRange', [<line1>, <line2>, <f-args>])
 command! -nargs=* -range CocFix    :call coc#rpc#notify('codeActionRange', [<line1>, <line2>, 'quickfix'])
 command! -nargs=0 CocUpdate       :call coc#util#update_extensions(1)
@@ -411,34 +437,35 @@ command! -nargs=* -bar -complete=custom,s:InstallOptions CocInstall   :call coc#
 call s:Enable(1)
 call s:Hi()
 
-vnoremap <Plug>(coc-range-select)          :<C-u>call       CocAction('rangeSelect',     visualmode(), v:true)<CR>
-vnoremap <Plug>(coc-range-select-backward) :<C-u>call       CocAction('rangeSelect',     visualmode(), v:false)<CR>
-nnoremap <Plug>(coc-range-select)          :<C-u>call       CocAction('rangeSelect',     '', v:true)<CR>
+vnoremap <silent> <Plug>(coc-range-select)          :<C-u>call       CocActionAsync('rangeSelect',     visualmode(), v:true)<CR>
+vnoremap <silent> <Plug>(coc-range-select-backward) :<C-u>call       CocActionAsync('rangeSelect',     visualmode(), v:false)<CR>
+nnoremap <Plug>(coc-range-select)          :<C-u>call       CocActionAsync('rangeSelect',     '', v:true)<CR>
 nnoremap <Plug>(coc-codelens-action)       :<C-u>call       CocActionAsync('codeLensAction')<CR>
-vnoremap <Plug>(coc-format-selected)       :<C-u>call       CocActionAsync('formatSelected',     visualmode())<CR>
-vnoremap <Plug>(coc-codeaction-selected)   :<C-u>call       CocActionAsync('codeAction',         visualmode())<CR>
+vnoremap <silent> <Plug>(coc-format-selected)       :<C-u>call       CocActionAsync('formatSelected',     visualmode())<CR>
+vnoremap <silent> <Plug>(coc-codeaction-selected)   :<C-u>call       CocActionAsync('codeAction',         visualmode())<CR>
 nnoremap <Plug>(coc-codeaction-selected)   :<C-u>set        operatorfunc=<SID>CodeActionFromSelected<CR>g@
 nnoremap <Plug>(coc-codeaction)            :<C-u>call       CocActionAsync('codeAction',         '')<CR>
 nnoremap <Plug>(coc-codeaction-line)       :<C-u>call       CocActionAsync('codeAction',         'n')<CR>
-nnoremap <Plug>(coc-rename)                :<C-u>call       CocActionAsync('rename')<CR>
-nnoremap <Plug>(coc-format-selected)       :<C-u>set        operatorfunc=<SID>FormatFromSelected<CR>g@
-nnoremap <Plug>(coc-format)                :<C-u>call       CocActionAsync('format')<CR>
-nnoremap <Plug>(coc-diagnostic-info)       :<C-u>call       CocActionAsync('diagnosticInfo')<CR>
-nnoremap <Plug>(coc-diagnostic-next)       :<C-u>call       CocActionAsync('diagnosticNext')<CR>
-nnoremap <Plug>(coc-diagnostic-prev)       :<C-u>call       CocActionAsync('diagnosticPrevious')<CR>
-nnoremap <Plug>(coc-diagnostic-next-error) :<C-u>call       CocActionAsync('diagnosticNext',     'error')<CR>
-nnoremap <Plug>(coc-diagnostic-prev-error) :<C-u>call       CocActionAsync('diagnosticPrevious', 'error')<CR>
-nnoremap <Plug>(coc-definition)            :<C-u>call       CocActionAsync('jumpDefinition')<CR>
-nnoremap <Plug>(coc-declaration)           :<C-u>call       CocActionAsync('jumpDeclaration')<CR>
-nnoremap <Plug>(coc-implementation)        :<C-u>call       CocActionAsync('jumpImplementation')<CR>
-nnoremap <Plug>(coc-type-definition)       :<C-u>call       CocActionAsync('jumpTypeDefinition')<CR>
-nnoremap <Plug>(coc-references)            :<C-u>call       CocActionAsync('jumpReferences')<CR>
-nnoremap <Plug>(coc-openlink)              :<C-u>call       CocActionAsync('openLink')<CR>
-nnoremap <Plug>(coc-fix-current)           :<C-u>call       CocActionAsync('doQuickfix')<CR>
-nnoremap <Plug>(coc-float-hide)            :<C-u>call       coc#util#float_hide()<CR>
-nnoremap <Plug>(coc-float-jump)            :<c-u>call       coc#util#float_jump()<cr>
-nnoremap <Plug>(coc-command-repeat)        :<C-u>call       CocAction('repeatCommand')<CR>
-nnoremap <Plug>(coc-refactor)              :<C-u>call       CocActionAsync('refactor')<CR>
+nnoremap <silent> <Plug>(coc-rename)                :<C-u>call       CocActionAsync('rename')<CR>
+nnoremap <silent> <Plug>(coc-format-selected)       :<C-u>set        operatorfunc=<SID>FormatFromSelected<CR>g@
+nnoremap <silent> <Plug>(coc-format)                :<C-u>call       CocActionAsync('format')<CR>
+nnoremap <silent> <Plug>(coc-diagnostic-info)       :<C-u>call       CocActionAsync('diagnosticInfo')<CR>
+nnoremap <silent> <Plug>(coc-diagnostic-next)       :<C-u>call       CocActionAsync('diagnosticNext')<CR>
+nnoremap <silent> <Plug>(coc-diagnostic-prev)       :<C-u>call       CocActionAsync('diagnosticPrevious')<CR>
+nnoremap <silent> <Plug>(coc-diagnostic-next-error) :<C-u>call       CocActionAsync('diagnosticNext',     'error')<CR>
+nnoremap <silent> <Plug>(coc-diagnostic-prev-error) :<C-u>call       CocActionAsync('diagnosticPrevious', 'error')<CR>
+nnoremap <silent> <Plug>(coc-definition)            :<C-u>call       CocActionAsync('jumpDefinition')<CR>
+nnoremap <silent> <Plug>(coc-declaration)           :<C-u>call       CocActionAsync('jumpDeclaration')<CR>
+nnoremap <silent> <Plug>(coc-implementation)        :<C-u>call       CocActionAsync('jumpImplementation')<CR>
+nnoremap <silent> <Plug>(coc-type-definition)       :<C-u>call       CocActionAsync('jumpTypeDefinition')<CR>
+nnoremap <silent> <Plug>(coc-references)            :<C-u>call       CocActionAsync('jumpReferences')<CR>
+nnoremap <silent> <Plug>(coc-references-used)       :<C-u>call       CocActionAsync('jumpUsed')<CR>
+nnoremap <silent> <Plug>(coc-openlink)              :<C-u>call       CocActionAsync('openLink')<CR>
+nnoremap <silent> <Plug>(coc-fix-current)           :<C-u>call       CocActionAsync('doQuickfix')<CR>
+nnoremap <silent> <Plug>(coc-float-hide)            :<C-u>call       coc#float#close_all()<CR>
+nnoremap <silent> <Plug>(coc-float-jump)            :<c-u>call       coc#float#jump()<cr>
+nnoremap <silent> <Plug>(coc-command-repeat)        :<C-u>call       CocAction('repeatCommand')<CR>
+nnoremap <silent> <Plug>(coc-refactor)              :<C-u>call       CocActionAsync('refactor')<CR>
 inoremap <silent>                          <Plug>CocRefresh <C-r>=coc#_complete()<CR>
 
 nnoremap <silent> <Plug>(coc-cursors-operator) :<C-u>set operatorfunc=<SID>CursorRangeFromSelected<CR>g@
