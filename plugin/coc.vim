@@ -57,7 +57,21 @@ function! CocTagFunc(pattern, flags, info) abort
   return coc#rpc#request('getTagList', [])
 endfunction
 
+function! CocPopupCallback(bufnr, arglist) abort
+  if len(a:arglist) == 2
+    if a:arglist[0] == 'confirm'
+      call coc#rpc#notify('PromptInsert', [a:arglist[1]])
+    elseif a:arglist[0] == 'exit'
+      execute 'silent! bd! '.a:bufnr
+      "call coc#rpc#notify('PromptUpdate', [a:arglist[1]])
+    endif
+  endif
+endfunction
+
 function! CocAction(name, ...) abort
+  if !get(g:, 'coc_service_initialized', 0)
+    throw 'coc.nvim not ready when invoke CocAction "'.a:name.'"'
+  endif
   return coc#rpc#request(a:name, a:000)
 endfunction
 
@@ -142,7 +156,16 @@ endfunction
 function! s:OpenConfig()
   let home = coc#util#get_config_home()
   if !isdirectory(home)
-    call mkdir(home, 'p')
+    echohl MoreMsg
+    echom 'Config directory "'.home.'" not exists, create? (y/n)'
+    echohl None
+    let confirm = nr2char(getchar())
+    redraw!
+    if !(confirm ==? "y" || confirm ==? "\r")
+      return
+    else
+      call mkdir(home, 'p')
+    end
   endif
   execute 'edit '.home.'/coc-settings.json'
 endfunction
@@ -264,7 +287,6 @@ function! s:Enable(initialize)
     if has('nvim-0.4.0') || has('patch-8.1.1719')
       autocmd CursorHold        * call coc#float#check_related()
     endif
-    autocmd WinLeave            * call coc#highlight#clear_match_group(0, '^CocHighlight')
     autocmd WinLeave            * call s:Autocmd('WinLeave', win_getid())
     autocmd WinEnter            * call s:Autocmd('WinEnter', win_getid())
     autocmd BufWinLeave         * call s:Autocmd('BufWinLeave', +expand('<abuf>'), bufwinid(+expand('<abuf>')))
@@ -381,17 +403,9 @@ function! s:ShowInfo()
       endif
     endif
     " check bundle
-    let file = s:root.'/bin/server.js'
-    if filereadable(file)
-      let file = s:root.'/lib/attach.js'
-      if !filereadable(file)
-        call add(lines, 'Error: javascript bundle not found, please compile the code of coc.nvim.')
-      endif
-    else
-      let file = s:root.'/build/index.js'
-      if !filereadable(file)
-        call add(lines, 'Error: javascript bundle not found, please remove coc.nvim folder and reinstall it.')
-      endif
+    let file = s:root.'/build/index.js'
+    if !filereadable(file)
+      call add(lines, 'Error: javascript bundle not found, please compile code of coc.nvim by webpack.')
     endif
     if !empty(lines)
       belowright vnew

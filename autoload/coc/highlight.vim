@@ -3,28 +3,38 @@ let s:clear_match_by_window = has('nvim-0.5.0') || has('patch-8.1.1084')
 let s:namespace_map = {}
 let s:ns_id = 1
 
+if has('nvim-0.5.0')
+  try
+    call getmatches(0)
+  catch /^Vim\%((\a\+)\)\=:E118/
+    let s:clear_match_by_window = 0
+  endtry
+endif
+
 " highlight LSP range,
-" TODO don't know how to count UTF16 code point, should work most cases.
-function! coc#highlight#range(bufnr, key, hlGroup, range) abort
+function! coc#highlight#ranges(bufnr, key, hlGroup, ranges) abort
   let bufnr = a:bufnr == 0 ? bufnr('%') : a:bufnr
-  if !bufloaded(bufnr)
+  if !bufloaded(bufnr) || !exists('*getbufline')
     return
   endif
   let srcId = s:create_namespace(a:key)
-  let start = a:range['start']
-  let end = a:range['end']
-  for lnum in range(start['line'] + 1, end['line'] + 1)
-    let arr = getbufline(bufnr, lnum)
-    let line = empty(arr) ? '' : arr[0]
-    if empty(line)
-      continue
-    endif
-    let colStart = lnum == start['line'] + 1 ? strlen(strcharpart(line, 0, start['character'])) : 0
-    let colEnd = lnum == end['line'] + 1 ? strlen(strcharpart(line, 0, end['character'])) : -1
-    if colStart == colEnd
-      continue
-    endif
-    call coc#highlight#add_highlight(bufnr, srcId, a:hlGroup, lnum - 1, colStart, colEnd)
+  for range in a:ranges
+    let start = range['start']
+    let end = range['end']
+    for lnum in range(start['line'] + 1, end['line'] + 1)
+      let arr = getbufline(bufnr, lnum)
+      let line = empty(arr) ? '' : arr[0]
+      if empty(line)
+        continue
+      endif
+      " TODO don't know how to count UTF16 code point, should work most cases.
+      let colStart = lnum == start['line'] + 1 ? strlen(strcharpart(line, 0, start['character'])) : 0
+      let colEnd = lnum == end['line'] + 1 ? strlen(strcharpart(line, 0, end['character'])) : -1
+      if colStart == colEnd
+        continue
+      endif
+      call coc#highlight#add_highlight(bufnr, srcId, a:hlGroup, lnum - 1, colStart, colEnd)
+    endfor
   endfor
 endfunction
 
@@ -63,33 +73,17 @@ endfunction
 "   endLine: number
 " }
 function! coc#highlight#add_highlights(winid, codes, highlights) abort
-  let winid = win_getid()
-  if has('nvim') && winid != a:winid
-    noa call nvim_set_current_win(a:winid)
-  endif
-  " clean highlights
-  call coc#highlight#syntax_clear(a:winid)
+  " clear highlights
+  call coc#compat#execute(a:winid, 'syntax clear')
   let bufnr = winbufnr(a:winid)
-  if has('nvim')
-    call nvim_buf_clear_namespace(bufnr, -1, 0, -1)
-  else
-    call clearmatches(a:winid)
-  endif
+  call coc#highlight#clear_highlight(bufnr, -1, 0, -1)
   if !empty(a:codes)
     call coc#highlight#highlight_lines(a:winid, a:codes)
   endif
   if !empty(a:highlights)
     for item in a:highlights
-      if has('nvim')
-        call nvim_buf_add_highlight(bufnr, -1, item['hlGroup'], item['lnum'], item['colStart'], item['colEnd'])
-      else
-        let pos = [item['lnum'] +1, item['colStart'] + 1, item['colEnd'] - item['colStart']]
-        call matchaddpos(item['hlGroup'], [pos], 10, -1, {'window': a:winid})
-      endif
+      call coc#highlight#add_highlight(bufnr, -1, item['hlGroup'], item['lnum'], item['colStart'], item['colEnd'])
     endfor
-  endif
-  if has('nvim')
-    noa call nvim_set_current_win(winid)
   endif
 endfunction
 
@@ -133,13 +127,7 @@ function! coc#highlight#highlight_lines(winid, blocks) abort
   endif
 endfunction
 
-function! coc#highlight#syntax_clear(winid) abort
-  if has('nvim') && win_getid() != a:winid
-    return
-  endif
-  call s:execute(a:winid, 'syntax clear')
-endfunction
-
+" Copmpose hlGroups with foreground and background colors.
 function! coc#highlight#compose_hlgroup(fgGroup, bgGroup) abort
   let hlGroup = 'Fg'.a:fgGroup.'Bg'.a:bgGroup
   if a:fgGroup == a:bgGroup
